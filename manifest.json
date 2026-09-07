@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Michael Davies",
   "license": "MIT",
-  "description": "Track cups of tea and caffeine load, with week/month/year history.",
+  "description": "Track cups of tea and caffeine load, with week/month/year history. Based on omarchy-coffee-counter by NetworkChuck (Chuck Keith).",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Tea Counter",
-    "description": "One-tap tea logging with presets, a daily caffeine total, and week/month/year history.",
+    "description": "One-tap tea logging with presets, a daily caffeine total, and week/month/year history. Based on omarchy-coffee-counter by NetworkChuck.",
     "category": "Health",
     "defaultSection": "right",
     "allowMultiple": false,

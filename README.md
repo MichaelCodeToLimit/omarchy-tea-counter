@@ -5,6 +5,8 @@ with them, with a one-tap dropdown logger and week / month / year history.
 
 The bar label is today's caffeine load. Click it for the dropdown.
 
+![Tea Counter preview](preview.png)
+
 No account, API key, network request, daemon, or install hook. Everything is
 local, and the only file it writes outside its own directory is its log.
 
@@ -172,3 +174,9 @@ widget watches the file and repaints on change.
 No colors are hard-coded. Foreground, accent, fonts, spacing, corner radius,
 and border treatment all come from the shell's theme singletons, so
 `omarchy theme set <name>` restyles the widget and dropdown with it.
+
+## Credits and Acknowledgements
+
+This plugin is directly based on and adapted from [**omarchy-coffee-counter**](https://github.com/theNetworkChuck/omarchy-coffee-counter.git) by **Chuck Keith ([NetworkChuck](https://github.com/theNetworkChuck))**.
+
+Huge thanks to NetworkChuck for the original architecture, QML widget layout, caffeine calculation model, and CLI companion design!
