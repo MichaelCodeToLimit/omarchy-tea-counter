@@ -3,6 +3,8 @@
 An Omarchy bar widget that counts cups of tea and the caffeine that came
 with them, with a one-tap dropdown logger and week / month / year history.
 
+> **Credit & Acknowledgement**: This project is directly based on and adapted for tea from the awesome [**omarchy-coffee-counter**](https://github.com/theNetworkChuck/omarchy-coffee-counter.git) by **Chuck Keith ([NetworkChuck](https://github.com/theNetworkChuck))**!
+
 The bar label is today's caffeine load. Click it for the dropdown.
 
 ![Tea Counter preview](preview.png)
