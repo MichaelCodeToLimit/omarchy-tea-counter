@@ -22,12 +22,10 @@ local, and the only file it writes outside its own directory is its log.
 There are no bundled binaries, no third-party libraries, no package installs,
 and no `sudo` or `pkexec` anywhere in the plugin.
 
-## Install and Enable
-
-To enable the plugin on your Omarchy bar:
+## Install
 
 ```bash
-omarchy plugin enable michael.tea
+omarchy plugin add https://github.com/MichaelCodeToLimit/omarchy-tea-counter.git --enable
 ```
 
 It defaults to the right section of the bar. To move it:
