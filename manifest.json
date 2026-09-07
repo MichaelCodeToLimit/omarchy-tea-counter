@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "id": "michael.tea",
+  "name": "Tea Counter",
+  "version": "1.0.0",
+  "author": "Michael Davies",
+  "license": "MIT",
+  "description": "Track cups of tea and caffeine load, with week/month/year history.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Tea Counter",
+    "description": "One-tap tea logging with presets, a daily caffeine total, and week/month/year history.",
+    "category": "Health",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {
+      "barDisplay": "Caffeine (mg)",
+      "rolloverHour": 4,
+      "baseMg": 47
+    },
+    "schema": [
+      {
+        "key": "barDisplay",
+        "type": "enum",
+        "label": "Bar label",
+        "description": "What the widget shows in the bar before you open it.",
+        "options": [
+          "Caffeine (mg)",
+          "Cups",
+          "Cups and mg",
+          "Icon only"
+        ],
+        "defaultValue": "Caffeine (mg)"
+      },
+      {
+        "key": "rolloverHour",
+        "type": "integer",
+        "label": "Day rolls over at (hour)",
+        "description": "A cup logged before this hour counts toward the previous day. 4 means a 2am cup belongs to last night.",
+        "min": 0,
+        "max": 12,
+        "step": 1,
+        "defaultValue": 4
+      },
+      {
+        "key": "baseMg",
+        "type": "integer",
+        "label": "Caffeine per full cup (mg)",
+        "description": "Milligrams in one full cup of black tea. Green is 60% of this, herbal 0%, decaf 4%, and size scales it linearly.",
+        "min": 10,
+        "max": 400,
+        "step": 1,
+        "defaultValue": 47
+      }
+    ]
+  }
+}

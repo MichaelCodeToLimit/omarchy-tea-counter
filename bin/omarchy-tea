@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Command-line companion to the michael.tea bar widget.
+
+Reads and writes the same log the widget does (~/.local/state/omarchy/tea.json)
+and mirrors its caffeine model and day bucketing, so a cup logged here shows up
+in the bar within a second — the widget watches the file.
+
+  omarchy-tea log                     log the first preset
+  omarchy-tea log "Herbal nightcap"   log a preset by name (or by 1-based number)
+  omarchy-tea log --type green --size 0.5 --style plain
+  omarchy-tea log --at "2026-08-25 15:30" --size 0.5
+  omarchy-tea today
+  omarchy-tea stats
+  omarchy-tea undo
+  omarchy-tea presets
+  omarchy-tea export [path]
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import math
+import os
+import random
+import sys
+import tempfile
+
+HOME = os.path.expanduser("~")
+LOG_PATH = os.path.join(HOME, ".local", "state", "omarchy", "tea.json")
+SHELL_JSON = os.path.join(HOME, ".config", "omarchy", "shell.json")
+PLUGIN_ID = "michael.tea"
+
+DEFAULT_BASE_MG = 47
+DEFAULT_ROLLOVER_HOUR = 4
+
+STRENGTHS = {"black": 1.0, "green": 0.6, "herbal": 0.0, "decaf": 0.04}
+STRENGTH_LABELS = {"black": "Black", "green": "Green", "herbal": "Herbal", "decaf": "Decaf"}
+SIZES = {"0.25": 0.25, "0.5": 0.5, "0.75": 0.75, "1": 1.0, "1.5": 1.5}
+SIZE_LABELS = {"0.25": "1/4", "0.5": "1/2", "0.75": "3/4", "1": "1", "1.5": "1 1/2"}
+STYLES = ("plain", "sweet", "milk", "sweet-milk")
+
+DEFAULT_PRESETS = [
+    {"id": "usual", "name": "My usual", "icon": "\U000f0d9e",
+     "strength": "black", "size": "1", "style": "plain"},
+    {"id": "green", "name": "Green tea", "icon": "\U000f0d9e",
+     "strength": "green", "size": "1", "style": "plain"},
+    {"id": "nightcap", "name": "Herbal nightcap", "icon": "\U000f0594",
+     "strength": "herbal", "size": "1", "style": "plain"},
+]
+
+
+# ----------------------------------------------------------------- settings
+
+def widget_settings() -> tuple[int, int]:
+    """rolloverHour and baseMg as configured on the bar widget, if it is placed."""
+    rollover, base = DEFAULT_ROLLOVER_HOUR, DEFAULT_BASE_MG
+    try:
+        with open(SHELL_JSON, encoding="utf-8") as handle:
+            layout = json.load(handle).get("bar", {}).get("layout", {})
+    except (OSError, ValueError):
+        return rollover, base
+
+    for section in layout.values():
+        for entry in section or []:
+            if isinstance(entry, dict) and entry.get("id") == PLUGIN_ID:
+                rollover = int(entry.get("rolloverHour", rollover))
+                base = int(entry.get("baseMg", base))
+                return rollover, base
+    return rollover, base
+
+
+# --------------------------------------------------------------- model math
+
+def normalize_strength(s: str | None) -> str:
+    if not s:
+        return "black"
+    s = s.lower()
+    if s == "full":
+        return "black"
+    if s == "half":
+        return "green"
+    return s if s in STRENGTHS else "black"
+
+
+def normalize_style(s: str | None) -> str:
+    if not s:
+        return "plain"
+    s = s.lower()
+    if s == "black":
+        return "plain"
+    if s == "creamy":
+        return "milk"
+    if s in ("sweet-creamy", "both"):
+        return "sweet-milk"
+    return s if s in STYLES else "plain"
+
+
+def caffeine_mg(strength: str, size: str, base_mg: int) -> int:
+    # math.floor(x + 0.5), not round(), so this matches JS Math.round in
+    # TeaLogic.js exactly. Python's banker's rounding would drift on half values.
+    s = normalize_strength(strength)
+    return math.floor(base_mg * STRENGTHS.get(s, 1.0) * SIZES.get(str(size), 1.0) + 0.5)
+
+
+def day_key(ms: float, rollover_hour: int) -> str:
+    stamp = dt.datetime.fromtimestamp(ms / 1000.0) - dt.timedelta(hours=rollover_hour)
+    return stamp.strftime("%Y-%m-%d")
+
+
+def week_start_key(key: str) -> str:
+    day = dt.datetime.strptime(key, "%Y-%m-%d").date()
+    return (day - dt.timedelta(days=day.weekday())).isoformat()
+
+
+def describe(entry: dict) -> str:
+    if entry.get("preset"):
+        return str(entry["preset"])
+    s = normalize_strength(entry.get("strength"))
+    return "%s %s · %s" % (
+        STRENGTH_LABELS.get(s, "Black"),
+        SIZE_LABELS.get(str(entry.get("size", "1")), "1"),
+        normalize_style(entry.get("style", "plain")),
+    )
+
+
+# -------------------------------------------------------------- persistence
+
+def load() -> dict:
+    try:
+        with open(LOG_PATH, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = {}
+    entries = [e for e in data.get("entries", []) if isinstance(e, dict) and "ts" in e]
+    entries.sort(key=lambda e: e["ts"])
+    presets = data.get("presets")
+    if not isinstance(presets, list):
+        presets = list(DEFAULT_PRESETS)
+    return {"version": 1, "entries": entries, "presets": presets}
+
+
+def save(state: dict) -> None:
+    """Atomic replace, matching the widget's own writes so a reader never sees
+    a half-written file and the FileView watcher fires exactly once."""
+    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+    payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=os.path.dirname(LOG_PATH),
+        prefix=".tea-", suffix=".tmp", delete=False)
+    try:
+        with handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, LOG_PATH)
+    except BaseException:
+        os.unlink(handle.name)
+        raise
+
+
+# ------------------------------------------------------------------ reports
+
+def totals(entries: list[dict], rollover_hour: int) -> dict:
+    now_ms = dt.datetime.now().timestamp() * 1000
+    today = day_key(now_ms, rollover_hour)
+    week, month, year = week_start_key(today), today[:7], today[:4]
+
+    buckets = {name: {"cups": 0.0, "mg": 0} for name in ("day", "week", "month", "year", "all")}
+    by_day: dict[str, dict] = {}
+
+    for entry in entries:
+        key = day_key(entry["ts"], rollover_hour)
+        cups = SIZES.get(str(entry.get("size", "1")), 1.0)
+        mg = int(entry.get("mg", 0))
+        slot = by_day.setdefault(key, {"cups": 0.0, "mg": 0})
+        slot["cups"] += cups
+        slot["mg"] += mg
+        for name, matches in (
+            ("day", key == today),
+            ("week", week_start_key(key) == week),
+            ("month", key[:7] == month),
+            ("year", key[:4] == year),
+            ("all", True),
+        ):
+            if matches:
+                buckets[name]["cups"] += cups
+                buckets[name]["mg"] += mg
+
+    buckets["todayKey"] = today
+    buckets["byDay"] = by_day
+    return buckets
+
+
+def fmt_cups(value: float) -> str:
+    # Round half away from zero, matching JS Math.round in TeaLogic.js.
+    rounded = math.floor(value * 10 + 0.5) / 10
+    return str(int(rounded)) if rounded == int(rounded) else str(rounded)
+
+
+# ----------------------------------------------------------------- commands
+
+def cmd_log(args, rollover_hour: int, base_mg: int) -> int:
+    state = load()
+    preset_name = ""
+
+    if args.strength or args.size or args.style:
+        strength = normalize_strength(args.strength or "black")
+        size = args.size or "1"
+        style = normalize_style(args.style or "plain")
+    else:
+        preset = pick_preset(state["presets"], args.preset)
+        if preset is None:
+            print("no matching preset; use --type/--size/--style", file=sys.stderr)
+            return 1
+        strength = normalize_strength(preset.get("strength"))
+        size = preset.get("size", "1")
+        style = normalize_style(preset.get("style"))
+        preset_name = preset["name"]
+
+    if args.at:
+        try:
+            when = dt.datetime.strptime(args.at, "%Y-%m-%d %H:%M")
+        except ValueError:
+            print('--at must look like "2026-08-25 15:30"', file=sys.stderr)
+            return 1
+    else:
+        when = dt.datetime.now()
+
+    entry = {
+        "id": "cup-%d-%d" % (int(when.timestamp() * 1000), random.randint(0, 99999)),
+        "ts": int(when.timestamp() * 1000),
+        "strength": strength,
+        "size": size,
+        "style": style,
+        "preset": preset_name,
+        "mg": caffeine_mg(strength, size, base_mg),
+    }
+    state["entries"].append(entry)
+    state["entries"].sort(key=lambda e: e["ts"])
+    save(state)
+
+    day = totals(state["entries"], rollover_hour)["day"]
+    print("logged %s (%d mg) - today: %s cups, %d mg"
+          % (describe(entry), entry["mg"], fmt_cups(day["cups"]), day["mg"]))
+    return 0
+
+
+def pick_preset(presets: list[dict], token: str | None) -> dict | None:
+    if not presets:
+        return None
+    if not token:
+        return presets[0]
+    if token.isdigit():
+        index = int(token) - 1
+        return presets[index] if 0 <= index < len(presets) else None
+    lowered = token.lower()
+    for preset in presets:
+        if preset["name"].lower() == lowered:
+            return preset
+    for preset in presets:
+        if lowered in preset["name"].lower():
+            return preset
+    return None
+
+
+def cmd_today(args, rollover_hour: int, base_mg: int) -> int:
+    state = load()
+    agg = totals(state["entries"], rollover_hour)
+    today = agg["todayKey"]
+    todays = [e for e in state["entries"] if day_key(e["ts"], rollover_hour) == today]
+
+    print("Today: %s cups · %d mg" % (fmt_cups(agg["day"]["cups"]), agg["day"]["mg"]))
+    for entry in todays:
+        stamp = dt.datetime.fromtimestamp(entry["ts"] / 1000.0)
+        print("  %s  %-24s %4d mg" % (stamp.strftime("%H:%M"), describe(entry), entry["mg"]))
+    if not todays:
+        print("  nothing yet")
+    return 0
+
+
+def cmd_stats(args, rollover_hour: int, base_mg: int) -> int:
+    state = load()
+    agg = totals(state["entries"], rollover_hour)
+    for name in ("day", "week", "month", "year", "all"):
+        label = {"day": "Today", "week": "This week", "month": "This month",
+                 "year": "This year", "all": "All time"}[name]
+        print("%-11s %6s cups %7d mg" % (label, fmt_cups(agg[name]["cups"]), agg[name]["mg"]))
+
+    logged_days = len(agg["byDay"])
+    if logged_days:
+        print("%-11s %6s cups %7d mg  (over %d logged day%s)"
+              % ("Average", fmt_cups(agg["all"]["cups"] / logged_days),
+                 round(agg["all"]["mg"] / logged_days), logged_days,
+                 "" if logged_days == 1 else "s"))
+    return 0
+
+
+def cmd_undo(args, rollover_hour: int, base_mg: int) -> int:
+    state = load()
+    if not state["entries"]:
+        print("nothing to undo", file=sys.stderr)
+        return 1
+    removed = state["entries"].pop()
+    save(state)
+    print("removed %s (%d mg)" % (describe(removed), removed["mg"]))
+    return 0
+
+
+def cmd_presets(args, rollover_hour: int, base_mg: int) -> int:
+    state = load()
+    if not state["presets"]:
+        print("no presets defined")
+        return 0
+    for index, preset in enumerate(state["presets"], start=1):
+        s = normalize_strength(preset.get("strength"))
+        print("%d. %-22s %s %s · %s  %d mg"
+              % (index, preset["name"],
+                 STRENGTH_LABELS.get(s, s),
+                 SIZE_LABELS.get(str(preset["size"]), preset["size"]),
+                 normalize_style(preset.get("style")),
+                 caffeine_mg(s, str(preset["size"]), base_mg)))
+    return 0
+
+
+def cmd_export(args, rollover_hour: int, base_mg: int) -> int:
+    import csv
+
+    state = load()
+    path = args.path or os.path.join(HOME, "tea-history.csv")
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["date", "time", "day", "preset", "type",
+                         "size_cups", "style", "caffeine_mg"])
+        for entry in state["entries"]:
+            stamp = dt.datetime.fromtimestamp(entry["ts"] / 1000.0)
+            writer.writerow([
+                stamp.strftime("%Y-%m-%d"),
+                stamp.strftime("%H:%M"),
+                day_key(entry["ts"], rollover_hour),
+                entry.get("preset", ""),
+                entry.get("strength", "black"),
+                SIZES.get(str(entry.get("size", "1")), 1.0),
+                entry.get("style", "plain"),
+                entry.get("mg", 0),
+            ])
+    print("wrote %d entries to %s" % (len(state["entries"]), path))
+    return 0
+
+
+# -------------------------------------------------------------------- entry
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="omarchy-tea",
+        description="Log and report tea for the Omarchy tea counter widget.")
+    sub = parser.add_subparsers(dest="command")
+
+    log = sub.add_parser("log", help="log a cup")
+    log.add_argument("preset", nargs="?", help="preset name or 1-based number")
+    log.add_argument("--type", "--strength", dest="strength", choices=sorted(STRENGTHS))
+    log.add_argument("--size", choices=sorted(SIZES, key=float))
+    log.add_argument("--style", choices=STYLES)
+    log.add_argument("--at", metavar='"YYYY-MM-DD HH:MM"', help="backfill a past cup")
+    log.set_defaults(handler=cmd_log)
+
+    sub.add_parser("today", help="today's cups").set_defaults(handler=cmd_today)
+    sub.add_parser("stats", help="week/month/year totals").set_defaults(handler=cmd_stats)
+    sub.add_parser("undo", help="remove the most recent cup").set_defaults(handler=cmd_undo)
+    sub.add_parser("presets", help="list presets").set_defaults(handler=cmd_presets)
+
+    export = sub.add_parser("export", help="write the full history to CSV")
+    export.add_argument("path", nargs="?", help="defaults to ~/tea-history.csv")
+    export.set_defaults(handler=cmd_export)
+
+    args = parser.parse_args(argv)
+    if not getattr(args, "handler", None):
+        parser.print_help()
+        return 1
+
+    rollover_hour, base_mg = widget_settings()
+    return args.handler(args, rollover_hour, base_mg)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
