@@ -22,7 +22,7 @@ local, and the only file it writes outside its own directory is its log.
 - **`node`**, only to run `tests/test_parity.py`. Not needed to use the plugin.
 
 There are no bundled binaries, no third-party libraries, no package installs,
-and no `sudo` or `pkexec` anywhere in the plugin.
+and no elevated root privileges required anywhere in the plugin.
 
 ## Install
 
